@@ -1,0 +1,55 @@
+Como usar o script de transcrição (Whisper)
+A) Pré-requisitos
+
+1 - Ter Python instalado (3.9+)
+2 - Instalar dependências:
+
+pip install openai-whisper
+
+Se der erro, instale também:
+
+pip install torch
+B) Como executar
+
+No terminal, dentro da pasta do projeto:
+
+python nome_do_script.py caminho/do/audio.mp3
+
+Exemplo real:
+
+python transcribe.py audio.mp3
+C) Parâmetros opcionais
+
+Você pode customizar assim:
+
+python transcribe.py audio.mp3 --output_dir saida --model medium --language pt
+
+Explicação:
+
+1 - --output_dir → pasta onde salva os arquivos (default: transcricoes)
+2 - --model → qualidade vs velocidade
+
+tiny (muito rápido, pior qualidade)
+base
+small (padrão)
+medium
+large (melhor, mais pesado)
+3 - --language → idioma do áudio (pt, en, etc)
+D) O que o script gera
+
+Para um arquivo audio.mp3, ele cria:
+
+transcricoes/
+├── audio.txt   → texto simples
+├── audio.srt   → legendas com tempo
+└── audio.json  → dados completos (segmentos + timestamps)
+E) Dicas rápidas
+
+1 - Áudios longos → use small ou medium
+2 - Se tiver GPU → Whisper fica muito mais rápido
+3 - Funciona com:
+
+.mp3
+.wav
+.mp4
+etc
