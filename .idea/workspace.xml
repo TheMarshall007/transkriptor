@@ -4,20 +4,28 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="020af7ea-9d98-4e9e-8d4f-0ed642e1bd1e" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/transkriptor.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="020af7ea-9d98-4e9e-8d4f-0ed642e1bd1e" name="Changes" comment="feat(transkriptor): add CLI for audio transcription using Whisper&#10;&#10;- Add local transcription for audio/video files&#10;- Export outputs in TXT, SRT, and JSON formats&#10;- Support model selection (tiny → large) and language configuration&#10;- Automatically create output directory&#10;- CLI interface built with argparse">
       <change afterPath="$PROJECT_DIR$/Coders1.mp3" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Colinha.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/transkriptor.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/cli.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/gui.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/services/export_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/services/media_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/services/transcription_service.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/utils/time_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -33,6 +41,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.app.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
@@ -57,6 +66,37 @@
       <recent name="C:\dev\transkriptor" />
     </key>
   </component>
+  <component name="RunManager">
+    <configuration name="app" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="transkriptor" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/app.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.app" />
+      </list>
+    </recent_temporary>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -73,11 +113,27 @@
       <option name="presentableId" value="Default" />
       <updated>1774651834458</updated>
       <workItem from="1774651835478" duration="782000" />
-      <workItem from="1774653247603" duration="1966000" />
+      <workItem from="1774653247603" duration="8330000" />
     </task>
+    <task id="LOCAL-00001" summary="feat(transkriptor): add CLI for audio transcription using Whisper&#10;&#10;- Add local transcription for audio/video files&#10;- Export outputs in TXT, SRT, and JSON formats&#10;- Support model selection (tiny → large) and language configuration&#10;- Automatically create output directory&#10;- CLI interface built with argparse">
+      <option name="closed" value="true" />
+      <created>1774655928945</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1774655928945</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="feat(transkriptor): add CLI for audio transcription using Whisper&#10;&#10;- Add local transcription for audio/video files&#10;- Export outputs in TXT, SRT, and JSON formats&#10;- Support model selection (tiny → large) and language configuration&#10;- Automatically create output directory&#10;- CLI interface built with argparse" />
+    <option name="LAST_COMMIT_MESSAGE" value="feat(transkriptor): add CLI for audio transcription using Whisper&#10;&#10;- Add local transcription for audio/video files&#10;- Export outputs in TXT, SRT, and JSON formats&#10;- Support model selection (tiny → large) and language configuration&#10;- Automatically create output directory&#10;- CLI interface built with argparse" />
+  </component>
+  <component name="com.intellij.coverage.CoverageDataManagerImpl">
+    <SUITE FILE_PATH="coverage/transkriptor$app.coverage" NAME="app Coverage Results" MODIFIED="1774663928407" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
