@@ -1,0 +1,26 @@
+# Python virtual environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local IDE state; shared project settings remain versioned
+.idea/workspace.xml
+.idea/transkriptor.iml
+.idea/tasks.xml
+.idea/shelf/
+
+# Local media and generated outputs
+/audio/
+/logs/
+/transcricoes/
+
+# Local environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Windows Explorer metadata
+Thumbs.db
+Desktop.ini
