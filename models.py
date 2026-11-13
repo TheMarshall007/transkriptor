@@ -9,17 +9,47 @@ class FileJob:
     size_bytes: int
     group_name: str = ""
     discovered_index: int = 0
+    job_id: str = ""
+    input_root: Optional[Path] = None
+    output_dir: Optional[Path] = None
+    output_stem: Optional[str] = None
+    display_path: str = ""
+    media_duration_sec: Optional[float] = None
+
+    @property
+    def key(self) -> str:
+        return self.job_id or str(self.path.resolve())
 
 
 @dataclass
 class FileProgress:
     status: str = "Waiting"  # Waiting | Queued | Processing | Done | Error
-    percent: int = 0
+    stage: str = "Na fila"
+    percent: Optional[int] = None
+    current_frames: Optional[int] = None
+    total_frames: Optional[int] = None
+    eta_sec: Optional[float] = None
     started_at: Optional[float] = None
+    stage_started_at: Optional[float] = None
+    progress_started_at: Optional[float] = None
+    progress_start_frames: int = 0
     finished_at: Optional[float] = None
     error: Optional[str] = None
     pid: Optional[int] = None
     duration_sec: Optional[float] = None
+    model_name: str = ""
+    device: str = ""
+    model_load_sec: Optional[float] = None
+    processing_duration_sec: Optional[float] = None
+    media_duration_sec: Optional[float] = None
+    realtime_factor: Optional[float] = None
+    cpu_avg: Optional[float] = None
+    cpu_peak: Optional[float] = None
+    ram_avg_mb: Optional[float] = None
+    ram_peak_mb: Optional[float] = None
+    gpu_utilization_percent: Optional[float] = None
+    gpu_memory_used_mb: Optional[int] = None
+    gpu_memory_total_mb: Optional[int] = None
 
 
 @dataclass

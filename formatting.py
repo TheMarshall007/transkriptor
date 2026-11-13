@@ -76,12 +76,12 @@ def relative_media_folder(input_root: Path, input_file: Path) -> Path:
         return Path()
 
 
-def get_output_paths(output_dir: Path, input_root: Path, input_file: Path):
+def get_output_paths(output_dir: Path, input_root: Path, input_file: Path, output_stem: str | None = None):
     relative_folder = relative_media_folder(input_root, input_file)
     target_dir = output_dir / relative_folder
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    base = input_file.stem
+    base = output_stem or input_file.stem
     return (
         target_dir / f"{base}.txt",
         target_dir / f"{base}.srt",
@@ -149,7 +149,7 @@ def write_grouped_transcription_file(
             continue
 
         content = txt_path.read_text(encoding="utf-8").strip()
-        analysis = file_analysis.get(job.path.name, {})
+        analysis = file_analysis.get(job.key, {})
 
         media_duration_sec = analysis.get("media_duration_sec") or 0.0
         processing_duration_sec = analysis.get("processing_duration_sec") or 0.0
@@ -201,9 +201,12 @@ def build_status_row(
     group_name: str,
     file_name: str,
     size_human: str,
-    percent: int,
-    status: str,
+    stage: str,
+    audio_text: str,
+    progress_text: str,
+    eta_text: str,
     queue_pos: str,
+    stage_elapsed_text: str = "",
     elapsed_text: str = "",
     worker_text: str = "",
     group_width: int = 20,
@@ -211,6 +214,8 @@ def build_status_row(
 ) -> str:
     group_col = truncate_text(group_name, group_width)
     file_col = truncate_text(file_name, file_width)
+    stage_col = truncate_text(stage, 22)
+    stage_elapsed_col = truncate_text(stage_elapsed_text, 9)
     elapsed_col = truncate_text(elapsed_text, 10)
     worker_col = truncate_text(worker_text, 8)
 
@@ -218,9 +223,12 @@ def build_status_row(
         f"{group_col:<{group_width}} "
         f"{file_col:<{file_width}} "
         f"{size_human:>8} "
-        f"{percent:>4}% "
-        f"{status:<12} "
+        f"{stage_col:<22} "
+        f"{audio_text:>13} "
+        f"{progress_text:>5} "
+        f"{eta_text:>9} "
         f"{queue_pos:>4} "
         f"{worker_col:<8} "
+        f"{stage_elapsed_col:<9} "
         f"{elapsed_col:<10}"
     )
