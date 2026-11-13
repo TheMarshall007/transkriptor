@@ -11,34 +11,10 @@ from formatting import format_duration
 from models import FileProgress
 
 
-def fake_progress_tick(state: FileProgress) -> None:
-    """
-    Simulate progress increment while processing.
-    This creates smooth visual progress even when actual progress is unknown.
-    """
-    if state.status != "Processing":
-        return
-
-    if state.percent < 3:
-        state.percent += 1
-    elif state.percent < 10:
-        state.percent += 2
-    elif state.percent < 20:
-        state.percent += 1
-    elif state.percent < 40:
-        state.percent += 2
-    elif state.percent < 60:
-        state.percent += 1
-    elif state.percent < 75:
-        state.percent += 1
-    elif state.percent < 85:
-        state.percent += 1
-    elif state.percent < 93:
-        state.percent += 1
-    else:
-        state.percent = 95
-
-    state.percent = min(state.percent, 95)
+def _set_stage(state: FileProgress, stage: str, timestamp: float) -> None:
+    if state.stage != stage:
+        state.stage = stage
+        state.stage_started_at = timestamp
 
 
 def queue_listener_loop(
@@ -107,12 +83,19 @@ def queue_listener_loop(
             continue
 
         state = progress_state[file_name]
+        timestamp = event.get("timestamp", time.time())
 
         if event_type == "started":
             state.status = "Processing"
-            state.started_at = event.get("timestamp", time.time())
+            state.started_at = timestamp
             state.pid = event.get("pid")
-            state.percent = max(state.percent, 1)
+            state.percent = None
+            state.current_frames = None
+            state.total_frames = None
+            state.eta_sec = None
+            state.progress_started_at = None
+            state.progress_start_frames = 0
+            _set_stage(state, "Carregando modelo", timestamp)
 
             pid = state.pid
             worker_metrics.setdefault(pid, {})
@@ -121,11 +104,45 @@ def queue_listener_loop(
 
             logger.info(f"[START] {file_name} | pid={state.pid}")
 
+        elif event_type == "stage_changed":
+            _set_stage(state, event.get("stage", state.stage), timestamp)
+
+        elif event_type == "transcription_progress":
+            _set_stage(state, "Transcrevendo", timestamp)
+            current_frames = max(0, int(event.get("current_frames") or 0))
+            total_frames = event.get("total_frames")
+            total_frames = int(total_frames) if total_frames is not None else None
+            if total_frames is not None and total_frames <= 0:
+                total_frames = None
+            elif total_frames is not None:
+                current_frames = min(current_frames, total_frames)
+
+            state.current_frames = current_frames
+            state.total_frames = total_frames
+
+            if state.progress_started_at is None:
+                state.progress_started_at = timestamp
+                state.progress_start_frames = current_frames
+
+            state.eta_sec = None
+            if total_frames is not None and current_frames > 0:
+                state.percent = min(99, int(current_frames * 100 / total_frames))
+
+            if total_frames is not None and current_frames > state.progress_start_frames:
+                elapsed = timestamp - state.progress_started_at
+                advanced_frames = current_frames - state.progress_start_frames
+                if elapsed > 0 and advanced_frames > 0:
+                    frames_per_sec = advanced_frames / elapsed
+                    state.eta_sec = max(0.0, (total_frames - current_frames) / frames_per_sec)
+
         elif event_type == "finished":
             state.status = "Done"
-            state.finished_at = event.get("timestamp", time.time())
+            state.finished_at = timestamp
             state.duration_sec = event.get("duration_sec", 0.0)
             state.percent = 100
+            state.eta_sec = None
+            state.stage = "Concluído"
+            state.stage_started_at = timestamp
 
             pid = state.pid
             if pid is not None:
@@ -148,9 +165,12 @@ def queue_listener_loop(
 
         elif event_type == "error":
             state.status = "Error"
-            state.finished_at = event.get("timestamp", time.time())
+            state.finished_at = timestamp
             state.duration_sec = event.get("duration_sec", 0.0)
-            state.percent = 100
+            failed_stage = event.get("stage", state.stage)
+            state.stage = f"Falha: {failed_stage}"
+            state.stage_started_at = timestamp
+            state.eta_sec = None
             state.error = event.get("error", "Erro desconhecido")
 
             pid = state.pid
@@ -165,7 +185,8 @@ def queue_listener_loop(
             tb = event.get("traceback", "")
 
             logger.error(
-                f"[ERROR] {file_name} | tempo={format_duration(duration_sec)} | "
+                f"[ERROR] {file_name} | etapa={failed_stage} | "
+                f"tempo={format_duration(duration_sec)} | "
                 f"erro={state.error}"
             )
             logger.error(f"[TRACEBACK] {file_name}\n{tb}")

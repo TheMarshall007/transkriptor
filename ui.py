@@ -179,6 +179,11 @@ def write_live_status_tsv(
             "queue_position",
             "discovered_index",
             "elapsed_or_duration",
+            "stage",
+            "current_frames",
+            "total_frames",
+            "eta_seconds",
+            "stage_elapsed",
         ])
     ]
 
@@ -191,17 +196,26 @@ def write_live_status_tsv(
         elif state.duration_sec is not None:
             elapsed_or_duration = format_duration(state.duration_sec)
 
+        stage_elapsed = ""
+        if state.status == "Processing" and state.stage_started_at is not None:
+            stage_elapsed = format_duration(time.time() - state.stage_started_at)
+
         lines.append("\t".join([
             job.group_name or "Raiz",
             job.path.name,
             str(job.size_bytes),
             human_size(job.size_bytes),
             state.status,
-            str(state.percent),
+            str(state.percent) if state.percent is not None else "",
             str(state.pid or ""),
             str(queue_positions.get(job.path.name, "")),
             str(job.discovered_index),
             elapsed_or_duration,
+            state.stage,
+            str(state.current_frames) if state.current_frames is not None else "",
+            str(state.total_frames) if state.total_frames is not None else "",
+            f"{state.eta_sec:.1f}" if state.eta_sec is not None else "",
+            stage_elapsed,
         ]))
 
     status_file.write_text("\n".join(lines), encoding="utf-8")
@@ -278,16 +292,19 @@ def render_screen(
         print(line)
 
     print("")
-    print("FILA / STATUS")
+    print("FILA / ETAPA")
     print("-" * 100)
     print(
         f"{'GRUPO':<20} "
         f"{'ARQUIVO':<34} "
         f"{'TAM':>8} "
+        f"{'ETAPA':<22} "
+        f"{'ÁUDIO':>13} "
         f"{'PROG':>5} "
-        f"{'STATUS':<12} "
+        f"{'ETA':>9} "
         f"{'FILA':>4} "
         f"{'WORKER':<8} "
+        f"{'T. ETAPA':<9} "
         f"{'TEMPO':<10}"
     )
 
@@ -307,16 +324,28 @@ def render_screen(
         elif state.duration_sec is not None:
             elapsed_text = format_duration(state.duration_sec)
 
+        stage_elapsed_text = ""
+        if state.status == "Processing" and state.stage_started_at is not None:
+            stage_elapsed_text = format_duration(time.time() - state.stage_started_at)
+
         worker_text = f"PID {state.pid}" if state.pid else "-"
+        progress_text = f"{state.percent}%" if state.percent is not None else "--"
+        audio_text = "--"
+        if state.current_frames is not None and state.total_frames is not None:
+            audio_text = f"{state.current_frames}/{state.total_frames}"
+        eta_text = format_duration(state.eta_sec) if state.eta_sec is not None else "--"
 
         print(
             build_status_row(
                 group_name=job.group_name or "Raiz",
                 file_name=job.path.name,
                 size_human=human_size(job.size_bytes),
-                percent=state.percent,
-                status=state.status,
+                stage=state.stage,
+                audio_text=audio_text,
+                progress_text=progress_text,
+                eta_text=eta_text,
                 queue_pos=queue_pos,
+                stage_elapsed_text=stage_elapsed_text,
                 elapsed_text=elapsed_text,
                 worker_text=worker_text,
             )

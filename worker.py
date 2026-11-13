@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 import time
@@ -12,6 +13,59 @@ from formatting import get_output_paths, write_srt
 _MODEL: Optional[object] = None
 _MODEL_NAME: Optional[str] = None
 _MODEL_LOAD_SECONDS: Optional[float] = None
+
+
+def transcribe_with_progress(
+    model,
+    input_file: Path,
+    language: str,
+    event_queue,
+    stage_state: dict,
+):
+    """Forward Whisper's real audio-frame progress to the parent process."""
+    transcribe_module = importlib.import_module("whisper.transcribe")
+    tqdm_module = transcribe_module.tqdm
+    original_tqdm = tqdm_module.tqdm
+
+    class ProgressTqdm(original_tqdm):
+        def __init__(self, *args, **kwargs):
+            self._tracks_audio_frames = kwargs.get("unit") == "frames"
+            if self._tracks_audio_frames:
+                kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
+            if self._tracks_audio_frames:
+                self._report_progress()
+
+        def update(self, n=1):
+            if self._tracks_audio_frames:
+                self.n += n
+                self._report_progress()
+                return None
+            result = super().update(n)
+            return result
+
+        def _report_progress(self):
+            timestamp = time.time()
+            stage_state["stage"] = "Transcrevendo"
+            event_queue.put({
+                "type": "transcription_progress",
+                "file_name": input_file.name,
+                "pid": os.getpid(),
+                "current_frames": self.n,
+                "total_frames": self.total,
+                "timestamp": timestamp,
+            })
+
+    tqdm_module.tqdm = ProgressTqdm
+    try:
+        return model.transcribe(
+            str(input_file),
+            language=language,
+            fp16=model.device.type == "cuda",
+            verbose=False,
+        )
+    finally:
+        tqdm_module.tqdm = original_tqdm
 
 
 def get_or_load_model(model_name: str, event_queue):
@@ -56,6 +110,7 @@ def transcribe_file_worker(
     input_root = Path(input_root_str)
     output_dir = Path(output_dir_str)
     start_time = time.time()
+    stage_state = {"stage": "Carregando modelo"}
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -69,12 +124,28 @@ def transcribe_file_worker(
 
         model = get_or_load_model(model_name, event_queue)
 
-        result = model.transcribe(
-            str(input_file),
-            language=language,
-            fp16=False,
-            verbose=False,
+        stage_state["stage"] = "Preparando áudio"
+        event_queue.put({
+            "type": "stage_changed",
+            "file_name": input_file.name,
+            "stage": stage_state["stage"],
+            "timestamp": time.time(),
+        })
+        result = transcribe_with_progress(
+            model,
+            input_file,
+            language,
+            event_queue,
+            stage_state,
         )
+
+        stage_state["stage"] = "Salvando resultados"
+        event_queue.put({
+            "type": "stage_changed",
+            "file_name": input_file.name,
+            "stage": stage_state["stage"],
+            "timestamp": time.time(),
+        })
 
         text = result.get("text", "").strip()
         segments = result.get("segments", [])
@@ -100,6 +171,7 @@ def transcribe_file_worker(
             "file_name": input_file.name,
             "timestamp": end_time,
             "duration_sec": duration_sec,
+            "stage": "Concluído",
             "outputs": {
                 "txt": str(txt_path),
                 "srt": str(srt_path),
@@ -111,6 +183,7 @@ def transcribe_file_worker(
             "status": "success",
             "file_name": input_file.name,
             "duration_sec": duration_sec,
+            "stage": "Concluído",
             "word_count": word_count,
             "char_count": char_count,
             "segment_count": segment_count,
@@ -132,6 +205,7 @@ def transcribe_file_worker(
             "file_name": input_file.name,
             "timestamp": end_time,
             "duration_sec": duration_sec,
+            "stage": stage_state["stage"],
             "error": error_msg,
             "traceback": tb_str,
         })
@@ -140,6 +214,7 @@ def transcribe_file_worker(
             "status": "error",
             "file_name": input_file.name,
             "duration_sec": duration_sec,
+            "stage": stage_state["stage"],
             "error": error_msg,
             "traceback": tb_str,
         }
