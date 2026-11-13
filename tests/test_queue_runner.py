@@ -47,6 +47,46 @@ class QueueRunnerTests(unittest.TestCase):
             self.assertEqual([job.output_stem for job in jobs], ["meeting", "meeting__right"])
             self.assertEqual([job.output_dir for job in jobs], [(root / "out").resolve()] * 2)
 
+    def test_local_output_is_created_next_to_each_media_in_mixed_inputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "course"
+            nested = folder / "week-1"
+            nested.mkdir(parents=True)
+            nested_media = nested / "lesson.wav"
+            nested_media.write_bytes(b"nested")
+            separate = root / "separate" / "interview.mp3"
+            separate.parent.mkdir()
+            separate.write_bytes(b"individual")
+
+            jobs, warnings = collect_transcription_jobs(
+                [folder, separate], "transcricoes", output_next_to_source=True)
+
+            self.assertEqual(warnings, [])
+            by_name = {job.path.name: job for job in jobs}
+            self.assertEqual(by_name["lesson.wav"].output_dir, nested / "transcricoes")
+            self.assertEqual(by_name["lesson.wav"].input_root, nested)
+            self.assertEqual(by_name["interview.mp3"].output_dir, separate.parent / "transcricoes")
+            self.assertEqual(by_name["interview.mp3"].input_root, separate.parent)
+
+    def test_local_output_skips_existing_output_folder_and_disambiguates_same_stem(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            output = source / "transcricoes"
+            output.mkdir(parents=True)
+            (source / "meeting.mp3").write_bytes(b"mp3")
+            (source / "meeting.wav").write_bytes(b"wav")
+            (output / "previous.mp3").write_bytes(b"old output")
+
+            jobs, warnings = collect_transcription_jobs(
+                [source], "transcricoes", output_next_to_source=True)
+
+            self.assertEqual(warnings, [])
+            self.assertEqual({job.path.name for job in jobs}, {"meeting.mp3", "meeting.wav"})
+            self.assertEqual(len({job.output_stem for job in jobs}), 2)
+            self.assertEqual({job.output_dir for job in jobs}, {output})
+
     def test_tsv_preserves_legacy_columns_and_adds_performance_fields(self):
         with tempfile.TemporaryDirectory() as temp:
             media = Path(temp) / "sample.mp3"

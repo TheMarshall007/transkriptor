@@ -20,7 +20,7 @@ dist/
 # Local media and generated outputs
 /audio/
 /logs/
-/transcricoes*/
+transcricoes*/
 
 # Local environment variables / secrets
 .env

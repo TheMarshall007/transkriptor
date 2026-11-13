@@ -40,8 +40,14 @@ def probe_duration(path: Path) -> float | None:
         return None
 
 
-def collect_transcription_jobs(sources: list[str | Path], output_dir: str | Path) -> tuple[list[FileJob], list[str]]:
+def collect_transcription_jobs(
+    sources: list[str | Path],
+    output_dir: str | Path,
+    *,
+    output_next_to_source: bool = False,
+) -> tuple[list[FileJob], list[str]]:
     output_root = Path(output_dir).expanduser().resolve()
+    output_subdirectory = output_root.name
     selected: list[Path] = []
     warnings: list[str] = []
     seen: set[Path] = set()
@@ -69,31 +75,65 @@ def collect_transcription_jobs(sources: list[str | Path], output_dir: str | Path
 
     pending: list[tuple[Path, Path, Path, str, str]] = []
     used_stems: set[str] = set()
+    used_local_names: set[tuple[Path, str]] = set()
+
+    def local_output_stem(media_file: Path, destination: Path) -> str:
+        candidate = media_file.stem
+        key = (destination.resolve(), candidate.casefold())
+        if key in used_local_names:
+            qualifier = media_file.suffix.lstrip(".") or media_file.parent.name or "arquivo"
+            candidate = f"{media_file.stem}__{qualifier}"
+            suffix = 2
+            while (destination.resolve(), candidate.casefold()) in used_local_names:
+                candidate = f"{media_file.stem}__{qualifier}_{suffix}"
+                suffix += 1
+            key = (destination.resolve(), candidate.casefold())
+        used_local_names.add(key)
+        return candidate
+
     for source in selected:
         if source.is_dir():
             if source not in folders:
                 continue
-            media = sorted((p for p in source.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS),
-                           key=lambda p: str(p.relative_to(source)).casefold())
+            media = sorted(
+                (path for path in source.rglob("*")
+                 if path.is_file()
+                 and path.suffix.lower() in SUPPORTED_EXTENSIONS
+                 and not (output_next_to_source and output_subdirectory in path.relative_to(source).parts[:-1])),
+                key=lambda path: str(path.relative_to(source)).casefold(),
+            )
             if not media:
                 warnings.append(f"Nenhum arquivo compatível na pasta: {source}")
                 continue
             folder_output = output_root / folder_names[source]
             for media_file in media:
                 relative = media_file.relative_to(source)
-                pending.append((media_file, source, folder_output, media_file.stem,
+                if output_next_to_source:
+                    destination = media_file.parent / output_subdirectory
+                    input_root = media_file.parent
+                    output_stem = local_output_stem(media_file, destination)
+                else:
+                    destination = folder_output
+                    input_root = source
+                    output_stem = media_file.stem
+                pending.append((media_file, input_root, destination, output_stem,
                                 f"{folder_names[source]}\\{relative}"))
         elif source.is_file() and source in individual_files:
-            candidate = source.stem
-            if candidate.casefold() in used_stems:
-                parent = source.parent.name or "arquivo"
-                candidate = f"{candidate}__{parent}"
-                suffix = 2
-                while candidate.casefold() in used_stems:
-                    candidate = f"{source.stem}__{parent}_{suffix}"
-                    suffix += 1
-            used_stems.add(candidate.casefold())
-            pending.append((source, source.parent, output_root, candidate, source.name))
+            if output_next_to_source:
+                destination = source.parent / output_subdirectory
+                candidate = local_output_stem(source, destination)
+            else:
+                destination = output_root
+                candidate = source.stem
+                if candidate.casefold() in used_stems:
+                    parent = source.parent.name or "arquivo"
+                    candidate = f"{candidate}__{parent}"
+                    suffix = 2
+                    while candidate.casefold() in used_stems:
+                        candidate = f"{source.stem}__{parent}_{suffix}"
+                        suffix += 1
+                used_stems.add(candidate.casefold())
+            pending.append((source, source.parent, destination, candidate, source.name))
 
     jobs = []
     for index, (file_path, input_root, destination, output_stem, display_path) in enumerate(pending, start=1):

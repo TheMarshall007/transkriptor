@@ -7,12 +7,13 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QDir, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCursor, QDragEnterEvent, QPalette, QDropEvent
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QProgressBar, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
+    QFileSystemModel, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
+    QProgressBar, QTreeView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from devices import cuda_status
@@ -23,31 +24,138 @@ from ui import write_live_status_tsv
 from worker import transcribe_file_worker
 
 
+class SourcePickerDialog(QDialog):
+    """Browse the filesystem and select media files, folders, or both."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Adicionar arquivos ou pastas")
+        self.resize(860, 600)
+        self.current_dir = Path.home()
+        if not self.current_dir.is_dir():
+            self.current_dir = Path.cwd()
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Selecione um ou mais arquivos e/ou pastas. Pastas serão lidas recursivamente."))
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit(str(self.current_dir))
+        self.path_edit.returnPressed.connect(self._go_to_path)
+        self.up_button = QPushButton("↑")
+        self.up_button.setAccessibleName("Pasta acima")
+        self.up_button.clicked.connect(self._go_up)
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(self.up_button)
+        layout.addLayout(path_row)
+
+        self.model = QFileSystemModel(self)
+        self.model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        self.model.setRootPath(str(self.current_dir))
+        self.tree = QTreeView()
+        self.tree.setModel(self.model)
+        self.tree.setRootIndex(self.model.index(str(self.current_dir)))
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tree.setColumnHidden(1, True)
+        self.tree.setColumnHidden(3, True)
+        self.tree.setColumnWidth(0, 560)
+        self.tree.doubleClicked.connect(self._open_directory)
+        layout.addWidget(self.tree, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.add_button = buttons.addButton("Adicionar selecionados", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.add_button.clicked.connect(self._accept_selection)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_paths(self) -> list[str]:
+        return [self.model.filePath(index) for index in self.tree.selectionModel().selectedRows(0)]
+
+    def _set_directory(self, path: Path):
+        if not path.is_dir():
+            QMessageBox.warning(self, "Pasta não encontrada", f"Não foi possível abrir a pasta:\n{path}")
+            return
+        self.current_dir = path.resolve()
+        self.path_edit.setText(str(self.current_dir))
+        self.model.setRootPath(str(self.current_dir))
+        self.tree.setRootIndex(self.model.index(str(self.current_dir)))
+
+    def _go_to_path(self):
+        self._set_directory(Path(self.path_edit.text()).expanduser())
+
+    def _go_up(self):
+        parent = self.current_dir.parent
+        if parent != self.current_dir:
+            self._set_directory(parent)
+
+    def _open_directory(self, index):
+        if self.model.isDir(index):
+            self._set_directory(Path(self.model.filePath(index)))
+
+    def _accept_selection(self):
+        selected = self.selected_paths()
+        if not selected:
+            QMessageBox.information(self, "Nenhuma entrada selecionada", "Selecione arquivos ou pastas para adicionar.")
+            return
+        self.accept()
+
+
 class DropZone(QFrame):
     paths_dropped = Signal(list)
+    choose_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setObjectName("dropZone")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("Adicionar arquivos ou pastas")
+        self.setToolTip("Clique para procurar ou solte arquivos e pastas aqui")
         layout = QVBoxLayout(self)
-        title = QLabel("Solte arquivos ou pastas aqui")
+        title = QLabel("Clique para procurar ou solte arquivos e pastas aqui")
         title.setObjectName("dropTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint = QLabel("Áudio e vídeo são detectados recursivamente nas pastas")
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        hint = QLabel("Pastas são percorridas recursivamente; arquivos e pastas podem ser combinados")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(title)
         layout.addWidget(hint)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.choose_requested.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.choose_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event: QDropEvent):
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
         if paths:
             self.paths_dropped.emit(paths)
             event.acceptProposedAction()
+        else:
+            event.ignore()
 
 
 class HoverButton(QPushButton):
@@ -181,6 +289,8 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Transkriptor", "Desktop")
         self.sources: list[str] = []
         self.jobs = []
+        self.is_processing = False
+        self.batch_thread: BatchThread | None = None
         self.states: dict[str, FileProgress] = {}
         self.current_job_id: str | None = None
         self.run_started_at: float | None = None
@@ -189,11 +299,13 @@ class MainWindow(QMainWindow):
         self.ram_samples: list[float] = []
         self.file_resource_samples: dict[str, list[tuple[float, float]]] = {}
         self.last_status_write = 0.0
+        self.status_write_errors: set[Path] = set()
         self.hide_gpu_timer = QTimer(self)
         self.hide_gpu_timer.setSingleShot(True)
         self.hide_gpu_timer.setInterval(250)
         self.hide_gpu_timer.timeout.connect(self._hide_gpu_if_pointer_left)
         self._build_ui()
+        self._update_source_state()
         self._restore_theme()
         QApplication.instance().paletteChanged.connect(self._system_theme_changed)
         QApplication.styleHints().colorSchemeChanged.connect(self._system_theme_changed)
@@ -254,18 +366,12 @@ class MainWindow(QMainWindow):
         self.device_combo.addItem("GPU CUDA", "cuda")
         self.device_combo.addItem("CPU", "cpu")
         self.language_edit = QLineEdit("pt")
-        self.output_edit = QLineEdit(str(Path("transcricoes").resolve()))
-        self.output_button = QPushButton("Escolher…")
-        self.output_button.clicked.connect(self._choose_output)
+        self.output_edit = QLineEdit("transcricoes")
+        self.output_edit.setPlaceholderText("transcricoes")
         settings.addWidget(self._field("Modelo", self.model_combo), 0, 0)
         settings.addWidget(self._field("Processar em", self.device_combo), 0, 1)
         settings.addWidget(self._field("Idioma", self.language_edit), 0, 2)
-        output_row = QHBoxLayout()
-        output_row.addWidget(self.output_edit, 1)
-        output_row.addWidget(self.output_button)
-        output_field = QWidget()
-        output_field.setLayout(output_row)
-        settings.addWidget(self._field("Pasta de saída", output_field), 1, 0, 1, 3)
+        settings.addWidget(self._field("Subpasta de saída em cada origem", self.output_edit), 1, 0, 1, 3)
         main.addWidget(settings_card)
 
         input_card = self._card()
@@ -273,21 +379,19 @@ class MainWindow(QMainWindow):
         action_row = QHBoxLayout()
         action_row.addWidget(self._section_label("Arquivos de entrada"))
         action_row.addStretch(1)
-        self.add_files_button = QPushButton("+ Adicionar arquivos")
-        self.add_folder_button = QPushButton("+ Adicionar pasta")
         self.remove_button = QPushButton("Remover selecionados")
-        self.add_files_button.clicked.connect(self._choose_files)
-        self.add_folder_button.clicked.connect(self._choose_folders)
+        self.remove_button.setEnabled(False)
         self.remove_button.clicked.connect(self._remove_selected_sources)
-        action_row.addWidget(self.add_files_button)
-        action_row.addWidget(self.add_folder_button)
         action_row.addWidget(self.remove_button)
         input_layout.addLayout(action_row)
         self.drop_zone = DropZone()
         self.drop_zone.paths_dropped.connect(self._add_sources)
+        self.drop_zone.choose_requested.connect(self._choose_sources)
         input_layout.addWidget(self.drop_zone)
         self.source_list = QListWidget()
+        self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.source_list.setMaximumHeight(96)
+        self.source_list.itemSelectionChanged.connect(self._update_source_state)
         input_layout.addWidget(self.source_list)
         main.addWidget(input_card)
 
@@ -392,30 +496,40 @@ class MainWindow(QMainWindow):
         layout.addWidget(value)
         return frame
 
-    def _choose_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Selecionar arquivos de mídia", "",
-            "Mídia compatível (*.mp3 *.wav *.m4a *.mp4 *.mpeg *.mpga *.webm *.ogg);;Todos os arquivos (*.*)")
-        self._add_sources(files)
-
-    def _choose_folders(self):
-        folder = QFileDialog.getExistingDirectory(self, "Selecionar pasta de mídia")
-        if folder:
-            self._add_sources([folder])
-
-    def _choose_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "Selecionar pasta de saída", self.output_edit.text())
-        if folder:
-            self.output_edit.setText(folder)
+    def _choose_sources(self):
+        dialog = SourcePickerDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._add_sources(dialog.selected_paths())
 
     def _add_sources(self, paths: list[str]):
-        if self.batch_thread is not None and self.batch_thread.isRunning():
+        if self.is_processing:
             return
+        added = 0
+        invalid: list[str] = []
         for raw in paths:
-            path = str(Path(raw).expanduser().resolve())
-            if path not in self.sources:
-                self.sources.append(path)
-                self.source_list.addItem(QListWidgetItem(path))
+            if not raw:
+                continue
+            try:
+                path = Path(raw).expanduser().resolve()
+                if not path.exists() or not (path.is_file() or path.is_dir()):
+                    invalid.append(str(raw))
+                    continue
+            except (OSError, RuntimeError, ValueError):
+                invalid.append(str(raw))
+                continue
+            normalized = str(path)
+            if normalized not in self.sources:
+                self.sources.append(normalized)
+                self.source_list.addItem(QListWidgetItem(normalized))
+                added += 1
         self._update_source_state()
+        if invalid:
+            preview = "\n".join(invalid[:10])
+            remainder = f"\n… e mais {len(invalid) - 10} caminho(s)." if len(invalid) > 10 else ""
+            QMessageBox.warning(self, "Entrada não adicionada",
+                                f"Alguns caminhos não existem ou não podem ser acessados:\n{preview}{remainder}")
+        elif added == 0 and paths:
+            self.statusBar().showMessage("As entradas já estavam na lista.", 5000)
 
     def _remove_selected_sources(self):
         for item in self.source_list.selectedItems():
@@ -426,7 +540,11 @@ class MainWindow(QMainWindow):
 
     def _update_source_state(self):
         has_sources = bool(self.sources)
-        self.start_button.setEnabled(has_sources and not (getattr(self, "batch_thread", None) and self.batch_thread.isRunning()))
+        running = self.is_processing
+        self.start_button.setEnabled(has_sources and not running)
+        self.drop_zone.setEnabled(not running)
+        self.source_list.setEnabled(not running)
+        self.remove_button.setEnabled(bool(self.source_list.selectedItems()) and not running)
         self.active_name.setText(f"{len(self.sources)} entrada(s) selecionada(s)" if has_sources else "Adicione arquivos ou pastas para começar")
 
     def _update_cuda_control(self):
@@ -443,13 +561,18 @@ class MainWindow(QMainWindow):
             self.gpu_badge.setToolTip(detail)
 
     def _start_batch(self):
-        output = Path(self.output_edit.text()).expanduser()
-        try:
-            output.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            QMessageBox.critical(self, "Pasta de saída", f"Não foi possível criar a pasta:\n{exc}")
+        output_name = self.output_edit.text().strip()
+        output_path = Path(output_name)
+        invalid_windows_name = any(character in output_name for character in '<>:"/\\|?*')
+        if (not output_name or output_name in {".", ".."} or output_path.is_absolute()
+                or output_path.name != output_name or output_path.drive
+                or invalid_windows_name or output_name.rstrip(" .") != output_name):
+            QMessageBox.warning(self, "Subpasta de saída",
+                                "Informe apenas o nome de uma subpasta, por exemplo: transcricoes.")
             return
-        jobs, warnings = collect_transcription_jobs(self.sources, output)
+
+        jobs, warnings = collect_transcription_jobs(
+            self.sources, output_path, output_next_to_source=True)
         if warnings:
             QMessageBox.warning(self, "Entradas ignoradas", "\n".join(warnings[:15]))
         if not jobs:
@@ -467,17 +590,15 @@ class MainWindow(QMainWindow):
         self.cpu_samples.clear()
         self.ram_samples.clear()
         self.file_resource_samples.clear()
+        self.status_write_errors.clear()
         self._render_queue()
         self.queue_count.setText(f"{len(jobs)} arquivo(s) · processados em sequência")
-        self.add_files_button.setEnabled(False)
-        self.add_folder_button.setEnabled(False)
-        self.remove_button.setEnabled(False)
-        self.start_button.setEnabled(False)
+        self.is_processing = True
+        self._update_source_state()
         self.device_combo.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.language_edit.setEnabled(False)
         self.output_edit.setEnabled(False)
-        self.output_button.setEnabled(False)
         self.batch_thread = BatchThread(jobs, self.model_combo.currentText(), self.language_edit.text().strip() or "pt",
                                         self.device_combo.currentData())
         self.batch_thread.event_received.connect(self._handle_event)
@@ -602,15 +723,13 @@ class MainWindow(QMainWindow):
     def _batch_finished(self):
         self._render_queue()
         self._update_summary()
-        self.add_files_button.setEnabled(True)
-        self.add_folder_button.setEnabled(True)
-        self.remove_button.setEnabled(True)
-        self.start_button.setEnabled(bool(self.sources))
+        self.is_processing = False
+        self.source_list.setEnabled(True)
         self.device_combo.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.language_edit.setEnabled(True)
         self.output_edit.setEnabled(True)
-        self.output_button.setEnabled(True)
+        self._update_source_state()
         self.stage_label.setText("Fila finalizada")
 
     def _update_summary(self):
@@ -626,10 +745,18 @@ class MainWindow(QMainWindow):
     def _flush_status(self):
         if not self.jobs:
             return
-        try:
-            write_live_status_tsv(Path(self.output_edit.text()), self.jobs, self.states)
-        except OSError:
-            pass
+        grouped: dict[Path, list] = {}
+        for job in self.jobs:
+            grouped.setdefault(job.output_dir, []).append(job)
+        for output_dir, jobs in grouped.items():
+            states = {job.key: self.states[job.key] for job in jobs}
+            try:
+                write_live_status_tsv(output_dir, jobs, states)
+            except OSError as exc:
+                if output_dir not in self.status_write_errors:
+                    self.status_write_errors.add(output_dir)
+                    self.statusBar().showMessage(
+                        f"Não foi possível atualizar o status em {output_dir}: {exc}", 8000)
 
     def _load_system_stats(self):
         try:

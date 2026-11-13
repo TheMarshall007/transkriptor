@@ -47,7 +47,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1 -Python 
 
 Execute `dist\Transkriptor\Transkriptor.exe` ou distribua a pasta `dist\Transkriptor` completa. O build inclui Whisper, PyTorch e PySide6; por isso, a pasta é grande. O FFmpeg e o ffprobe precisam estar instalados no computador e disponíveis no `PATH`. Os pesos Whisper são baixados para o cache local na primeira execução de cada modelo. Para aceleração CUDA, o computador de destino também precisa de GPU NVIDIA, driver compatível e bibliotecas CUDA que o PyTorch instalado consiga carregar. O executável não requer uma instalação separada de Python.
 
-Na tela, selecione modelo, dispositivo e idioma; adicione arquivos ou pastas arrastando para a área pontilhada ou usando os botões; ajuste a saída se necessário e inicie. Pastas são percorridas recursivamente e sua árvore é mantida na saída. Arquivos avulsos são salvos na raiz da saída; nomes repetidos recebem sufixos para evitar sobrescrita.
+Na tela, selecione modelo, dispositivo e idioma; clique na área de entrada para abrir o seletor integrado ou arraste arquivos e pastas para ela. O seletor permite combinar arquivos e pastas; pastas são percorridas recursivamente. Os resultados e o `live_status.tsv` da GUI ficam na subpasta configurada (por padrão, `transcricoes`) dentro da pasta de cada mídia. O CLI continua usando a pasta global indicada por `--output-dir`.
 
 O tema acompanha as configurações do sistema por padrão. As opções claro e escuro ficam disponíveis no menu Tema.
 
