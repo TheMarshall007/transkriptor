@@ -14,8 +14,15 @@ class FileJob:
 @dataclass
 class FileProgress:
     status: str = "Waiting"  # Waiting | Queued | Processing | Done | Error
-    percent: int = 0
+    stage: str = "Na fila"
+    percent: Optional[int] = None
+    current_frames: Optional[int] = None
+    total_frames: Optional[int] = None
+    eta_sec: Optional[float] = None
     started_at: Optional[float] = None
+    stage_started_at: Optional[float] = None
+    progress_started_at: Optional[float] = None
+    progress_start_frames: int = 0
     finished_at: Optional[float] = None
     error: Optional[str] = None
     pid: Optional[int] = None

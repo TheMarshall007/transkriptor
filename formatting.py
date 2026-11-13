@@ -201,9 +201,12 @@ def build_status_row(
     group_name: str,
     file_name: str,
     size_human: str,
-    percent: int,
-    status: str,
+    stage: str,
+    audio_text: str,
+    progress_text: str,
+    eta_text: str,
     queue_pos: str,
+    stage_elapsed_text: str = "",
     elapsed_text: str = "",
     worker_text: str = "",
     group_width: int = 20,
@@ -211,6 +214,8 @@ def build_status_row(
 ) -> str:
     group_col = truncate_text(group_name, group_width)
     file_col = truncate_text(file_name, file_width)
+    stage_col = truncate_text(stage, 22)
+    stage_elapsed_col = truncate_text(stage_elapsed_text, 9)
     elapsed_col = truncate_text(elapsed_text, 10)
     worker_col = truncate_text(worker_text, 8)
 
@@ -218,9 +223,12 @@ def build_status_row(
         f"{group_col:<{group_width}} "
         f"{file_col:<{file_width}} "
         f"{size_human:>8} "
-        f"{percent:>4}% "
-        f"{status:<12} "
+        f"{stage_col:<22} "
+        f"{audio_text:>13} "
+        f"{progress_text:>5} "
+        f"{eta_text:>9} "
         f"{queue_pos:>4} "
         f"{worker_col:<8} "
+        f"{stage_elapsed_col:<9} "
         f"{elapsed_col:<10}"
     )

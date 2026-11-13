@@ -17,7 +17,7 @@ try:
 except ImportError:
     psutil = None
 
-from event_handlers import fake_progress_tick, queue_listener_loop
+from event_handlers import queue_listener_loop
 from file_discovery import scan_files
 from formatting import (
     build_grouped_output_filename,
@@ -75,9 +75,6 @@ def renderer_loop(
     output_dir: Path,
 ) -> None:
     while not stop_event.is_set():
-        for state in progress_state.values():
-            fake_progress_tick(state)
-
         render_screen(
             header_lines=header_lines,
             worker_metrics=worker_metrics,
@@ -237,7 +234,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     progress_state: Dict[str, FileProgress] = {
-        job.path.name: FileProgress(status="Queued", percent=0)
+        job.path.name: FileProgress(status="Queued")
         for job in discovered_jobs
     }
 
@@ -372,6 +369,13 @@ def main() -> None:
                             success_count += 1
 
                             processing_duration_sec = result.get("duration_sec", 0.0)
+                            state = progress_state[job.path.name]
+                            state.status = "Done"
+                            state.stage = "Concluído"
+                            state.percent = 100
+                            state.eta_sec = None
+                            state.finished_at = state.finished_at or time.time()
+                            state.duration_sec = processing_duration_sec
                             word_count = result.get("word_count", 0)
                             char_count = result.get("char_count", 0)
                             segment_count = result.get("segment_count", 0)
@@ -419,9 +423,11 @@ def main() -> None:
 
                             state = progress_state[job.path.name]
                             state.status = "Error"
-                            state.percent = 100
+                            state.stage = f"Falha: {result.get('stage', state.stage)}"
+                            state.eta_sec = None
                             state.error = result.get("error", "Erro desconhecido")
                             state.duration_sec = result.get("duration_sec")
+                            state.finished_at = time.time()
 
                             analysis.update({
                                 "processing_duration_sec": result.get("duration_sec"),
@@ -440,8 +446,11 @@ def main() -> None:
                         error_count += 1
                         state = progress_state[job.path.name]
                         state.status = "Error"
-                        state.percent = 100
+                        if not state.stage.startswith("Falha:"):
+                            state.stage = f"Falha: {state.stage}"
+                        state.eta_sec = None
                         state.error = "Falha ao recuperar resultado do processo"
+                        state.finished_at = time.time()
 
                         logger.error(
                             f"Erro ao processar {job.path.name}:\n"
