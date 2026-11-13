@@ -39,6 +39,9 @@ def scan_files(input_path: Path) -> List[FileJob]:
                 size_bytes=file_path.stat().st_size,
                 group_name=_resolve_group_name(input_path, file_path),
                 discovered_index=index,
+                job_id=str(file_path.resolve()),
+                input_root=input_path,
+                display_path=str(file_path.relative_to(input_path)) if input_path.is_dir() else file_path.name,
             )
         )
 

@@ -31,6 +31,7 @@ from models import FileJob, FileProgress
 from monitoring import resource_monitor_loop
 from ui import render_header, render_screen
 from worker import transcribe_file_worker
+from devices import resolve_device
 
 
 def setup_logger(log_dir: Path) -> logging.Logger:
@@ -75,6 +76,15 @@ def renderer_loop(
     output_dir: Path,
 ) -> None:
     while not stop_event.is_set():
+        for job in jobs:
+            state = progress_state.get(job.key)
+            if not state or state.pid is None:
+                continue
+            worker_resource = resource_metrics.get("workers", {}).get(str(state.pid), {})
+            state.cpu_avg = worker_resource.get("cpu_avg", state.cpu_avg)
+            state.cpu_peak = worker_resource.get("cpu_peak", state.cpu_peak)
+            state.ram_avg_mb = worker_resource.get("rss_avg_mb", state.ram_avg_mb)
+            state.ram_peak_mb = worker_resource.get("rss_peak_mb", state.ram_peak_mb)
         render_screen(
             header_lines=header_lines,
             worker_metrics=worker_metrics,
@@ -127,7 +137,7 @@ def build_initial_file_analysis(jobs) -> Dict[str, dict]:
         media_duration_sec = get_media_duration_seconds(job.path)
         size_mb = job.size_bytes / (1024 * 1024)
 
-        file_analysis[job.path.name] = {
+        file_analysis[job.key] = {
             "execution_priority_index": execution_priority_index,
             "size_bytes": job.size_bytes,
             "size_mb": size_mb,
@@ -140,7 +150,10 @@ def build_initial_file_analysis(jobs) -> Dict[str, dict]:
             "mb_per_processing_second": None,
             "words_per_processing_second": None,
             "words_per_media_minute": None,
+            "model_name": "",
+            "device": "",
         }
+        job.media_duration_sec = media_duration_sec
 
     return file_analysis
 
@@ -168,7 +181,8 @@ def main() -> None:
     parser.add_argument("--output-dir", default="transcricoes", help="Pasta de saída")
     parser.add_argument("--log-dir", default="logs", help="Pasta dos logs")
     parser.add_argument("--workers", type=int, default=1, help="Quantidade de workers")
-    parser.add_argument("--model", default="small", help="Modelo Whisper")
+    parser.add_argument("--model", default="medium", help="Modelo Whisper")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto", help="Dispositivo de inferência")
     parser.add_argument("--language", default="pt", help="Idioma do áudio")
     parser.add_argument("--metrics-json", default=None, help="Salvar métricas em JSON")
     parser.add_argument(
@@ -188,6 +202,10 @@ def main() -> None:
         help="Intervalo de amostragem de CPU/RAM em segundos",
     )
     args = parser.parse_args()
+    try:
+        args.device = resolve_device(args.device)
+    except (RuntimeError, ValueError) as exc:
+        parser.error(str(exc))
 
     input_path = Path(args.input_path).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -219,7 +237,12 @@ def main() -> None:
         )
 
     logger.info(f"Workers sugerido para esta máquina: {suggested_workers()}")
-    if workers > 1:
+    if workers > 1 and args.device == "cuda":
+        logger.warning(
+            "Vários workers em GPU podem exceder a memória de vídeo. "
+            "Se houver falhas, volte para --workers 1."
+        )
+    elif workers > 1:
         logger.warning(
             "Whisper em CPU com múltiplos processos pode consumir muita CPU/RAM. "
             "Se houver falhas, volte para --workers 1."
@@ -233,14 +256,17 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    file_analysis = build_initial_file_analysis(execution_jobs)
     progress_state: Dict[str, FileProgress] = {
-        job.path.name: FileProgress(status="Queued")
+        job.key: FileProgress(
+            status="Queued", model_name=args.model, device=args.device,
+            media_duration_sec=file_analysis[job.key].get("media_duration_sec"),
+        )
         for job in discovered_jobs
     }
 
     worker_metrics: Dict[int, dict] = {}
     resource_metrics: Dict[str, dict] = {"run": {}, "workers": {}}
-    file_analysis = build_initial_file_analysis(execution_jobs)
     folder_analysis: Dict[str, dict] = {}
 
     logger.info("Estrutura encontrada (ordem natural por pasta/arquivo):")
@@ -250,7 +276,7 @@ def main() -> None:
         except ValueError:
             relative = job.path
 
-        analysis = file_analysis[job.path.name]
+        analysis = file_analysis[job.key]
         media_duration_sec = analysis.get("media_duration_sec")
         media_duration_text = (
             format_duration(media_duration_sec)
@@ -355,12 +381,15 @@ def main() -> None:
                         args.model,
                         args.language,
                         event_queue,
+                        args.device,
+                        job.key,
+                        job.output_stem,
                     )
                     futures[future] = job
 
                 for future in as_completed(futures):
                     job = futures[future]
-                    analysis = file_analysis[job.path.name]
+                    analysis = file_analysis[job.key]
 
                     try:
                         result = future.result()
@@ -368,14 +397,20 @@ def main() -> None:
                         if result.get("status") == "success":
                             success_count += 1
 
-                            processing_duration_sec = result.get("duration_sec", 0.0)
-                            state = progress_state[job.path.name]
+                            processing_duration_sec = result.get(
+                                "processing_duration_sec", result.get("duration_sec", 0.0)
+                            )
+                            state = progress_state[job.key]
                             state.status = "Done"
                             state.stage = "Concluído"
                             state.percent = 100
                             state.eta_sec = None
                             state.finished_at = state.finished_at or time.time()
                             state.duration_sec = processing_duration_sec
+                            state.processing_duration_sec = processing_duration_sec
+                            state.model_name = result.get("model_name", args.model)
+                            state.device = result.get("device", args.device)
+                            state.model_load_sec = result.get("model_load_sec")
                             word_count = result.get("word_count", 0)
                             char_count = result.get("char_count", 0)
                             segment_count = result.get("segment_count", 0)
@@ -408,6 +443,9 @@ def main() -> None:
                             )
 
                             analysis.update({
+                                "model_name": state.model_name,
+                                "device": state.device,
+                                "model_load_sec": state.model_load_sec,
                                 "processing_duration_sec": processing_duration_sec,
                                 "realtime_factor": realtime_factor,
                                 "word_count": word_count,
@@ -421,16 +459,19 @@ def main() -> None:
                         else:
                             error_count += 1
 
-                            state = progress_state[job.path.name]
+                            state = progress_state[job.key]
                             state.status = "Error"
                             state.stage = f"Falha: {result.get('stage', state.stage)}"
                             state.eta_sec = None
                             state.error = result.get("error", "Erro desconhecido")
                             state.duration_sec = result.get("duration_sec")
+                            state.processing_duration_sec = result.get("processing_duration_sec")
                             state.finished_at = time.time()
 
                             analysis.update({
-                                "processing_duration_sec": result.get("duration_sec"),
+                                "processing_duration_sec": result.get(
+                                    "processing_duration_sec", result.get("duration_sec")
+                                ),
                             })
 
                             logger.error(
@@ -444,7 +485,7 @@ def main() -> None:
 
                     except Exception:
                         error_count += 1
-                        state = progress_state[job.path.name]
+                        state = progress_state[job.key]
                         state.status = "Error"
                         if not state.stage.startswith("Falha:"):
                             state.stage = f"Falha: {state.stage}"
@@ -547,7 +588,7 @@ def main() -> None:
     logger.info("\n===== RESUMO POR ARQUIVO =====")
     for job in display_jobs:
         name = job.path.name
-        a = file_analysis[name]
+        a = file_analysis[job.key]
         media_text = (
             format_duration(a["media_duration_sec"])
             if a["media_duration_sec"] is not None
@@ -667,7 +708,7 @@ def main() -> None:
     print("-" * 80)
     for job in display_jobs:
         name = job.path.name
-        a = file_analysis[name]
+        a = file_analysis[job.key]
         media_text = (
             format_duration(a["media_duration_sec"])
             if a["media_duration_sec"] is not None

@@ -50,6 +50,7 @@ def queue_listener_loop(
 
             worker_metrics.setdefault(pid, {})
             worker_metrics[pid]["model_name"] = model_name
+            worker_metrics[pid]["device"] = event.get("device", "")
             worker_metrics[pid]["model_loading"] = True
             worker_metrics[pid]["model_loaded"] = False
             worker_metrics[pid]["model_load_started_at"] = event.get("timestamp")
@@ -66,6 +67,7 @@ def queue_listener_loop(
 
             worker_metrics.setdefault(pid, {})
             worker_metrics[pid]["model_name"] = model_name
+            worker_metrics[pid]["device"] = event.get("device", "")
             worker_metrics[pid]["model_loading"] = False
             worker_metrics[pid]["model_loaded"] = True
             worker_metrics[pid]["model_load_duration_sec"] = load_duration_sec
@@ -79,16 +81,19 @@ def queue_listener_loop(
             continue
 
         file_name = event.get("file_name")
-        if file_name not in progress_state:
+        state_key = event.get("job_id") or file_name
+        if state_key not in progress_state:
             continue
 
-        state = progress_state[file_name]
+        state = progress_state[state_key]
         timestamp = event.get("timestamp", time.time())
 
         if event_type == "started":
             state.status = "Processing"
             state.started_at = timestamp
             state.pid = event.get("pid")
+            state.model_name = event.get("model_name", state.model_name)
+            state.device = event.get("device", state.device)
             state.percent = None
             state.current_frames = None
             state.total_frames = None
@@ -143,6 +148,16 @@ def queue_listener_loop(
             state.eta_sec = None
             state.stage = "Concluído"
             state.stage_started_at = timestamp
+            state.model_name = event.get("model_name", state.model_name)
+            state.device = event.get("device", state.device)
+            state.model_load_sec = event.get("model_load_sec", state.model_load_sec)
+            state.processing_duration_sec = event.get("processing_duration_sec", state.processing_duration_sec)
+            state.realtime_factor = (
+                state.media_duration_sec / state.processing_duration_sec
+                if state.media_duration_sec and state.processing_duration_sec
+                and state.processing_duration_sec > 0
+                else None
+            )
 
             pid = state.pid
             if pid is not None:

@@ -43,11 +43,15 @@ def build_metrics_payload(
 ):
     files_payload = []
     for job in jobs:
-        state = progress_state[job.path.name]
-        analysis = file_analysis.get(job.path.name, {})
+        state = progress_state[job.key]
+        analysis = file_analysis.get(job.key, {})
 
         files_payload.append({
             "file_name": job.path.name,
+            "job_id": job.key,
+            "model_name": state.model_name,
+            "device": state.device,
+            "model_load_sec": state.model_load_sec,
             "path": str(job.path),
             "group_name": job.group_name,
             "discovered_index": job.discovered_index,
@@ -94,6 +98,7 @@ def build_metrics_payload(
             "output_dir": str(output_dir),
             "log_dir": str(log_dir),
             "model": args.model,
+            "device": getattr(args, "device", "auto"),
             "language": args.language,
             "workers": args.workers,
             "workers_effective": clamp_workers(args.workers),

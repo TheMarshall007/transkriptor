@@ -132,10 +132,10 @@ def _queue_positions(
 ) -> Dict[str, int]:
     waiting_jobs = [
         job for job in _sorted_jobs_for_display(jobs)
-        if progress_state[job.path.name].status in {"Waiting", "Queued"}
+        if progress_state[job.key].status in {"Waiting", "Queued"}
     ]
     return {
-        job.path.name: index
+        job.key: index
         for index, job in enumerate(waiting_jobs, start=1)
     }
 
@@ -147,11 +147,11 @@ def _worker_current_files(
     current: Dict[int, str] = {}
 
     for job in jobs:
-        state = progress_state.get(job.path.name)
+        state = progress_state.get(job.key)
         if not state:
             continue
         if state.status == "Processing" and state.pid is not None:
-            current[state.pid] = job.path.name
+            current[state.pid] = job.display_path or job.path.name
 
     return current
 
@@ -184,11 +184,24 @@ def write_live_status_tsv(
             "total_frames",
             "eta_seconds",
             "stage_elapsed",
+            "model_name",
+            "device",
+            "model_load_seconds",
+            "processing_seconds",
+            "media_duration_seconds",
+            "realtime_factor",
+            "cpu_avg_percent",
+            "cpu_peak_percent",
+            "ram_avg_mb",
+            "ram_peak_mb",
+            "gpu_utilization_percent",
+            "gpu_memory_used_mb",
+            "gpu_memory_total_mb",
         ])
     ]
 
     for job in _sorted_jobs_for_display(jobs):
-        state = progress_state[job.path.name]
+        state = progress_state[job.key]
 
         elapsed_or_duration = ""
         if state.status == "Processing" and state.started_at:
@@ -202,13 +215,13 @@ def write_live_status_tsv(
 
         lines.append("\t".join([
             job.group_name or "Raiz",
-            job.path.name,
+            job.display_path or job.path.name,
             str(job.size_bytes),
             human_size(job.size_bytes),
             state.status,
             str(state.percent) if state.percent is not None else "",
             str(state.pid or ""),
-            str(queue_positions.get(job.path.name, "")),
+            str(queue_positions.get(job.key, "")),
             str(job.discovered_index),
             elapsed_or_duration,
             state.stage,
@@ -216,6 +229,19 @@ def write_live_status_tsv(
             str(state.total_frames) if state.total_frames is not None else "",
             f"{state.eta_sec:.1f}" if state.eta_sec is not None else "",
             stage_elapsed,
+            state.model_name,
+            state.device,
+            f"{state.model_load_sec:.3f}" if state.model_load_sec is not None else "",
+            f"{state.processing_duration_sec:.3f}" if state.processing_duration_sec is not None else "",
+            f"{state.media_duration_sec:.3f}" if state.media_duration_sec is not None else "",
+            f"{state.realtime_factor:.3f}" if state.realtime_factor is not None else "",
+            f"{state.cpu_avg:.2f}" if state.cpu_avg is not None else "",
+            f"{state.cpu_peak:.2f}" if state.cpu_peak is not None else "",
+            f"{state.ram_avg_mb:.2f}" if state.ram_avg_mb is not None else "",
+            f"{state.ram_peak_mb:.2f}" if state.ram_peak_mb is not None else "",
+            f"{state.gpu_utilization_percent:.2f}" if state.gpu_utilization_percent is not None else "",
+            str(state.gpu_memory_used_mb) if state.gpu_memory_used_mb is not None else "",
+            str(state.gpu_memory_total_mb) if state.gpu_memory_total_mb is not None else "",
         ]))
 
     status_file.write_text("\n".join(lines), encoding="utf-8")
@@ -311,10 +337,10 @@ def render_screen(
     queue_positions = _queue_positions(jobs, progress_state)
 
     for job in _sorted_jobs_for_display(jobs):
-        state = progress_state[job.path.name]
+        state = progress_state[job.key]
 
         if state.status in {"Waiting", "Queued"}:
-            queue_pos = str(queue_positions.get(job.path.name, "-"))
+            queue_pos = str(queue_positions.get(job.key, "-"))
         else:
             queue_pos = "-"
 
@@ -338,7 +364,7 @@ def render_screen(
         print(
             build_status_row(
                 group_name=job.group_name or "Raiz",
-                file_name=job.path.name,
+                file_name=job.display_path or job.path.name,
                 size_human=human_size(job.size_bytes),
                 stage=state.stage,
                 audio_text=audio_text,

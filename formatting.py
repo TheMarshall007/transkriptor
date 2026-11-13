@@ -76,12 +76,12 @@ def relative_media_folder(input_root: Path, input_file: Path) -> Path:
         return Path()
 
 
-def get_output_paths(output_dir: Path, input_root: Path, input_file: Path):
+def get_output_paths(output_dir: Path, input_root: Path, input_file: Path, output_stem: str | None = None):
     relative_folder = relative_media_folder(input_root, input_file)
     target_dir = output_dir / relative_folder
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    base = input_file.stem
+    base = output_stem or input_file.stem
     return (
         target_dir / f"{base}.txt",
         target_dir / f"{base}.srt",
@@ -149,7 +149,7 @@ def write_grouped_transcription_file(
             continue
 
         content = txt_path.read_text(encoding="utf-8").strip()
-        analysis = file_analysis.get(job.path.name, {})
+        analysis = file_analysis.get(job.key, {})
 
         media_duration_sec = analysis.get("media_duration_sec") or 0.0
         processing_duration_sec = analysis.get("processing_duration_sec") or 0.0
