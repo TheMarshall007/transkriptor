@@ -109,6 +109,13 @@ class QueueRunnerTests(unittest.TestCase):
             ])
             self.assertEqual(values[15:17], ["medium", "cuda"])
             self.assertEqual(values[17:21], ["2.000", "8.000", "20.000", "2.500"])
+            self.assertEqual(columns[28:38], [
+                "cpu_min_percent", "ram_min_mb", "gpu_process_util_min_percent",
+                "gpu_process_util_avg_percent", "gpu_process_util_max_percent",
+                "gpu_process_vram_min_mb", "gpu_process_vram_avg_mb",
+                "gpu_process_vram_max_mb", "gpu_process_samples", "gpu_process_metric_status",
+            ])
+            self.assertEqual(len(columns), len(values))
 
 
 if __name__ == "__main__":

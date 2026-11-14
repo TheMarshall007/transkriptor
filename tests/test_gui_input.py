@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -61,61 +62,48 @@ class GuiInputTests(unittest.TestCase):
             self.assertEqual({Path(path) for path in dialog.selected_paths()}, {media, folder})
             dialog.close()
 
-    def test_remove_button_tracks_selection_and_sources_are_added(self):
+    def test_table_discovers_deduplicates_and_removes_only_selected_media(self):
         class IdleGpuMonitor:
             def __init__(self, parent=None):
                 from PySide6.QtCore import QObject, Signal
-
                 class MonitorSignal(QObject):
                     info_updated = Signal(dict)
-
                 self._signals = MonitorSignal(parent)
                 self.info_updated = self._signals.info_updated
-
             def start(self):
                 return None
-
             def requestInterruption(self):
                 return None
-
             def wait(self, _timeout):
                 return True
 
         with tempfile.TemporaryDirectory() as temp, \
                 patch("gui.GpuMonitor", IdleGpuMonitor), \
                 patch("gui.cuda_status", return_value=(False, "CUDA indisponível")):
-            media = Path(temp) / "sample.wav"
-            media.write_bytes(b"audio")
-            folder = Path(temp) / "folder"
-            (folder / "nested").mkdir(parents=True)
-            (folder / "nested" / "inside.mp3").write_bytes(b"audio")
+            root = Path(temp)
+            folder = root / "folder"
+            nested = folder / "nested"
+            nested.mkdir(parents=True)
+            first = nested / "inside.mp3"
+            second = root / "single.wav"
+            first.write_bytes(b"audio")
+            second.write_bytes(b"audio")
             window = MainWindow()
-            with patch("gui.SourcePickerDialog") as picker_class:
-                picker = picker_class.return_value
-                picker.exec.return_value = QDialog.DialogCode.Accepted
-                picker.selected_paths.return_value = [str(media)]
-                QTest.mouseClick(window.drop_zone, Qt.MouseButton.LeftButton)
-                picker_class.assert_called_once_with(window)
-            self.assertEqual(window.source_list.count(), 1)
-            self.assertFalse(window.remove_button.isEnabled())
-
-            window.drop_zone.paths_dropped.emit([str(folder)])
-            self.assertEqual(window.source_list.count(), 2)
-
-            missing = Path(temp) / "missing.wav"
-            with patch("gui.QMessageBox.warning") as warning:
-                window._add_sources([str(missing)])
-                warning.assert_called_once()
-            self.assertEqual(window.source_list.count(), 2)
-
-            for index in range(window.source_list.count()):
-                window.source_list.item(index).setSelected(True)
+            window._add_sources([str(folder), str(first), str(second)])
+            deadline = time.monotonic() + 5
+            while window.is_discovering and time.monotonic() < deadline:
+                self.app.processEvents()
+                QTest.qWait(20)
+            self.assertEqual(window.queue_model.rowCount(), 2)
+            self.assertEqual([window.queue_model.data(window.queue_model.index(row, 3)) for row in range(2)],
+                             ["Pronto", "Pronto"])
+            window.queue_table.selectRow(0)
             self.assertTrue(window.remove_button.isEnabled())
+            selected = window.jobs[0].path
             window.remove_button.click()
-            self.assertEqual(window.source_list.count(), 0)
-            self.assertFalse(window.remove_button.isEnabled())
+            self.assertEqual(window.queue_model.rowCount(), 1)
+            self.assertNotEqual(window.jobs[0].path, selected)
             window.close()
-
     def test_live_status_is_written_inside_each_source_output_folder(self):
         from types import SimpleNamespace
 

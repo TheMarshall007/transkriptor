@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +19,41 @@ class FileJob:
     @property
     def key(self) -> str:
         return self.job_id or str(self.path.resolve())
+
+
+@dataclass
+class MetricSeries:
+    current: Optional[float] = None
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    total: float = 0.0
+    samples: int = 0
+
+    def add(self, value: Optional[float]) -> None:
+        if value is None:
+            return
+        value = float(value)
+        self.current = value
+        self.minimum = value if self.minimum is None else min(self.minimum, value)
+        self.maximum = value if self.maximum is None else max(self.maximum, value)
+        self.total += value
+        self.samples += 1
+
+    @property
+    def average(self) -> Optional[float]:
+        return self.total / self.samples if self.samples else None
+
+
+@dataclass
+class FileResourceMetrics:
+    cpu_percent: MetricSeries = field(default_factory=MetricSeries)
+    ram_mb: MetricSeries = field(default_factory=MetricSeries)
+    gpu_utilization_percent: MetricSeries = field(default_factory=MetricSeries)
+    gpu_memory_mb: MetricSeries = field(default_factory=MetricSeries)
+    gpu_available: Optional[bool] = None
+    gpu_utilization_available: Optional[bool] = None
+    gpu_memory_available: Optional[bool] = None
+    gpu_unavailable_reason: str = ""
 
 
 @dataclass
@@ -50,6 +85,7 @@ class FileProgress:
     gpu_utilization_percent: Optional[float] = None
     gpu_memory_used_mb: Optional[int] = None
     gpu_memory_total_mb: Optional[int] = None
+    resource_metrics: FileResourceMetrics = field(default_factory=FileResourceMetrics)
 
 
 @dataclass

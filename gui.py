@@ -12,13 +12,15 @@ from PySide6.QtGui import QCursor, QDragEnterEvent, QPalette, QDropEvent
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
     QFileSystemModel, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
-    QProgressBar, QTreeView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton,
+    QTreeView, QVBoxLayout, QWidget,
 )
 
 from devices import cuda_status
-from gpu_info import query_gpu_info
+from gpu_info import query_gpu_info, query_gpu_process_metrics
 from models import FileProgress
+from metrics_dialog import FileMetricsDialog
+from queue_model import EyeButtonDelegate, QueueTableModel, QueueTableView
 from queue_runner import collect_transcription_jobs, probe_duration
 from ui import write_live_status_tsv
 from worker import transcribe_file_worker
@@ -225,12 +227,32 @@ class BatchThread(QThread):
         self.batch_finished.emit()
 
 
+class DiscoveryThread(QThread):
+    discovered = Signal(list, list)
+
+    def __init__(self, sources, output_name):
+        super().__init__()
+        self.sources = list(sources)
+        self.output_name = output_name
+
+    def run(self):
+        try:
+            jobs, warnings = collect_transcription_jobs(
+                self.sources, Path(self.output_name), output_next_to_source=True)
+        except Exception as exc:
+            jobs, warnings = [], [f"Falha ao percorrer as entradas: {exc}"]
+        self.discovered.emit(jobs, warnings)
+
+
 class GpuMonitor(QThread):
     info_updated = Signal(dict)
 
     def run(self):
+        last_seen = None
         while not self.isInterruptionRequested():
-            self.info_updated.emit(query_gpu_info())
+            process = query_gpu_process_metrics(__import__("os").getpid(), last_seen)
+            last_seen = process.get("last_seen_us", last_seen)
+            self.info_updated.emit({"device": query_gpu_info(), "process": process})
             self.msleep(1800)
 
 
@@ -289,7 +311,10 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Transkriptor", "Desktop")
         self.sources: list[str] = []
         self.jobs = []
+        self.excluded_paths: set[str] = set()
+        self.metric_dialogs: dict[str, FileMetricsDialog] = {}
         self.is_processing = False
+        self.is_discovering = False
         self.batch_thread: BatchThread | None = None
         self.states: dict[str, FileProgress] = {}
         self.current_job_id: str | None = None
@@ -374,89 +399,47 @@ class MainWindow(QMainWindow):
         settings.addWidget(self._field("Subpasta de saída em cada origem", self.output_edit), 1, 0, 1, 3)
         main.addWidget(settings_card)
 
-        input_card = self._card()
-        input_layout = QVBoxLayout(input_card)
+        queue_card = self._card()
+        queue_layout = QVBoxLayout(queue_card)
         action_row = QHBoxLayout()
-        action_row.addWidget(self._section_label("Arquivos de entrada"))
+        action_row.addWidget(self._section_label("Fila de transcrição"))
         action_row.addStretch(1)
+        self.queue_count = QLabel("Nenhum arquivo na fila")
+        self.queue_count.setObjectName("muted")
+        action_row.addWidget(self.queue_count)
+        self.add_button = QPushButton("Adicionar arquivos/pastas")
+        self.add_button.clicked.connect(self._choose_sources)
+        action_row.addWidget(self.add_button)
         self.remove_button = QPushButton("Remover selecionados")
         self.remove_button.setEnabled(False)
         self.remove_button.clicked.connect(self._remove_selected_sources)
         action_row.addWidget(self.remove_button)
-        input_layout.addLayout(action_row)
-        self.drop_zone = DropZone()
-        self.drop_zone.paths_dropped.connect(self._add_sources)
-        self.drop_zone.choose_requested.connect(self._choose_sources)
-        input_layout.addWidget(self.drop_zone)
-        self.source_list = QListWidget()
-        self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.source_list.setMaximumHeight(96)
-        self.source_list.itemSelectionChanged.connect(self._update_source_state)
-        input_layout.addWidget(self.source_list)
-        main.addWidget(input_card)
-
-        body = QHBoxLayout()
-        body.setSpacing(16)
-        queue_card = self._card()
-        queue_layout = QVBoxLayout(queue_card)
-        queue_top = QHBoxLayout()
-        queue_top.addWidget(self._section_label("Fila de transcrição"))
-        queue_top.addStretch(1)
-        self.queue_count = QLabel("Nenhum arquivo na fila")
-        self.queue_count.setObjectName("muted")
-        queue_top.addWidget(self.queue_count)
-        queue_layout.addLayout(queue_top)
-        self.queue_tree = QTreeWidget()
-        self.queue_tree.setColumnCount(4)
-        self.queue_tree.setHeaderLabels(["Arquivo", "Status", "Etapa", "Progresso"])
-        self.queue_tree.setRootIsDecorated(False)
-        self.queue_tree.setAlternatingRowColors(True)
-        queue_layout.addWidget(self.queue_tree, 1)
+        queue_layout.addLayout(action_row)
+        self.queue_model = QueueTableModel(self)
+        self.queue_table = QueueTableView()
+        self.queue_table.setModel(self.queue_model)
+        self.queue_table.paths_dropped.connect(self._add_sources)
+        self.queue_table.selectionModel().selectionChanged.connect(self._update_source_state)
+        self.queue_table.metrics_requested.connect(self._show_file_metrics)
+        self.eye_delegate = EyeButtonDelegate(self.queue_table)
+        self.eye_delegate.activated.connect(self._show_file_metrics)
+        self.queue_table.setItemDelegateForColumn(QueueTableModel.DETAILS_COLUMN, self.eye_delegate)
+        self.queue_table.horizontalHeader().setSectionResizeMode(0, self.queue_table.horizontalHeader().ResizeMode.Stretch)
+        self.queue_table.horizontalHeader().setSectionResizeMode(1, self.queue_table.horizontalHeader().ResizeMode.Stretch)
+        for column, width in ((2, 95), (3, 105), (4, 150), (5, 95), (6, 95), (7, 48)):
+            self.queue_table.setColumnWidth(column, width)
+        queue_layout.addWidget(self.queue_table, 1)
         self.start_button = QPushButton("Iniciar transcrição")
         self.start_button.setObjectName("primaryButton")
         self.start_button.clicked.connect(self._start_batch)
         queue_layout.addWidget(self.start_button)
-        body.addWidget(queue_card, 3)
-
-        detail_card = self._card()
-        detail_layout = QVBoxLayout(detail_card)
-        detail_layout.addWidget(self._section_label("Agora processando"))
-        self.active_name = QLabel("Adicione arquivos ou pastas para começar")
-        self.active_name.setObjectName("activeName")
-        self.active_name.setWordWrap(True)
-        detail_layout.addWidget(self.active_name)
-        self.stage_label = QLabel("Aguardando entrada")
-        self.stage_label.setObjectName("muted")
-        detail_layout.addWidget(self.stage_label)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        detail_layout.addWidget(self.progress)
-        self.progress_detail = QLabel("O percentual acompanha os frames reais analisados pelo Whisper.")
-        self.progress_detail.setObjectName("muted")
-        self.progress_detail.setWordWrap(True)
-        detail_layout.addWidget(self.progress_detail)
-        detail_layout.addSpacing(6)
-        self.metrics_grid = QGridLayout()
-        self.metric_labels: dict[str, QLabel] = {}
-        for index, (key, name) in enumerate([
-            ("model", "Modelo / dispositivo"), ("load", "Carga do modelo"),
-            ("processing", "Inferência"), ("media", "Duração da mídia"),
-            ("rtf", "Velocidade relativa"), ("system", "CPU / memória"),
-        ]):
-            label = QLabel("—")
-            label.setObjectName("metricValue")
-            self.metric_labels[key] = label
-            self.metrics_grid.addWidget(self._metric(name, label), index // 2, index % 2)
-        detail_layout.addLayout(self.metrics_grid)
+        main.addWidget(queue_card, 1)
+        self.status_line = QLabel("Adicione arquivos ou pastas para começar")
+        self.status_line.setObjectName("muted")
+        main.addWidget(self.status_line)
         self.run_summary = QLabel("Fila: —  ·  Concluídos: 0  ·  Falhas: 0")
         self.run_summary.setObjectName("muted")
-        self.run_summary.setWordWrap(True)
-        detail_layout.addWidget(self.run_summary)
-        detail_layout.addStretch(1)
-        body.addWidget(detail_card, 2)
-        main.addLayout(body, 1)
-
+        main.addWidget(self.run_summary)
         self.gpu_panel = GpuPanel(self)
         self.gpu_panel.entered.connect(self.hide_gpu_timer.stop)
         self.gpu_panel.leave_requested.connect(self.hide_gpu_timer.start)
@@ -502,51 +485,90 @@ class MainWindow(QMainWindow):
             self._add_sources(dialog.selected_paths())
 
     def _add_sources(self, paths: list[str]):
-        if self.is_processing:
+        if self.is_processing or self.is_discovering:
             return
-        added = 0
-        invalid: list[str] = []
+        valid = []
+        invalid = []
         for raw in paths:
-            if not raw:
-                continue
             try:
                 path = Path(raw).expanduser().resolve()
-                if not path.exists() or not (path.is_file() or path.is_dir()):
+                if path.exists() and (path.is_file() or path.is_dir()):
+                    valid.append(str(path))
+                else:
                     invalid.append(str(raw))
-                    continue
             except (OSError, RuntimeError, ValueError):
                 invalid.append(str(raw))
-                continue
-            normalized = str(path)
-            if normalized not in self.sources:
-                self.sources.append(normalized)
-                self.source_list.addItem(QListWidgetItem(normalized))
-                added += 1
-        self._update_source_state()
+        known = {str(Path(item).resolve()).casefold() for item in self.sources}
+        self.sources.extend(item for item in valid if item.casefold() not in known)
+        if self.sources:
+            self.is_discovering = True
+            self.queue_table.setEnabled(False)
+            self.add_button.setEnabled(False)
+            self.status_line.setText("Procurando mídias nas entradas…")
+            self.discovery_thread = DiscoveryThread(self.sources, self.output_edit.text().strip() or "transcricoes")
+            self.discovery_thread.discovered.connect(self._discovery_finished)
+            self.discovery_thread.start()
         if invalid:
-            preview = "\n".join(invalid[:10])
-            remainder = f"\n… e mais {len(invalid) - 10} caminho(s)." if len(invalid) > 10 else ""
-            QMessageBox.warning(self, "Entrada não adicionada",
-                                f"Alguns caminhos não existem ou não podem ser acessados:\n{preview}{remainder}")
-        elif added == 0 and paths:
-            self.statusBar().showMessage("As entradas já estavam na lista.", 5000)
+            QMessageBox.warning(self, "Entrada não adicionada", "Não foi possível acessar:\n" + "\n".join(invalid[:10]))
+
+    def _discovery_finished(self, jobs, warnings):
+        existing = {str(job.path.resolve()).casefold(): job for job in self.jobs}
+        excluded = getattr(self, "excluded_paths", set())
+        for job in jobs:
+            key_path = str(job.path.resolve()).casefold()
+            if key_path not in existing and key_path not in excluded:
+                self.jobs.append(job)
+                self.states[job.key] = FileProgress(status="Waiting", stage="Pronto")
+        self.jobs.sort(key=lambda job: str(job.path).casefold())
+        self.queue_model.replace_rows(self.jobs, self.states)
+        self.is_discovering = False
+        self.queue_table.setEnabled(True)
+        self._update_source_state()
+        self.add_button.setEnabled(not self.is_processing)
+        self.status_line.setText(f"{len(self.jobs)} arquivo(s) carregado(s)" if self.jobs else "Nenhuma mídia compatível encontrada")
+        if warnings:
+            QMessageBox.warning(self, "Entradas ignoradas", "\n".join(warnings[:15]))
 
     def _remove_selected_sources(self):
-        for item in self.source_list.selectedItems():
-            row = self.source_list.row(item)
-            self.sources.remove(item.text())
-            self.source_list.takeItem(row)
+        if self.is_processing:
+            return
+        rows = sorted({index.row() for index in self.queue_table.selectionModel().selectedRows()})
+        removed = self.queue_model.remove_rows(rows)
+        for job in removed:
+            self.states.pop(job.key, None)
+            self.excluded_paths.add(str(job.path.resolve()).casefold())
+        self.jobs = list(self.queue_model.jobs)
         self._update_source_state()
 
-    def _update_source_state(self):
-        has_sources = bool(self.sources)
+    def _update_source_state(self, *_):
         running = self.is_processing
-        self.start_button.setEnabled(has_sources and not running)
-        self.drop_zone.setEnabled(not running)
-        self.source_list.setEnabled(not running)
-        self.remove_button.setEnabled(bool(self.source_list.selectedItems()) and not running)
-        self.active_name.setText(f"{len(self.sources)} entrada(s) selecionada(s)" if has_sources else "Adicione arquivos ou pastas para começar")
+        has_jobs = bool(self.jobs)
+        self.start_button.setEnabled(has_jobs and not running and not self.is_discovering)
+        if hasattr(self, "add_button"):
+            self.add_button.setEnabled(not running and not self.is_discovering)
+        selected_rows = self.queue_table.selectionModel().selectedRows() if hasattr(self, "queue_table") else []
+        ready_selected = any(self.states.get(self.jobs[index.row()].key, FileProgress()).status in ("Waiting", "Pronto")
+                             for index in selected_rows if index.row() < len(self.jobs))
+        self.remove_button.setEnabled(ready_selected and not running)
+        self.queue_count.setText(f"{len(self.jobs)} arquivo(s) na fila" if has_jobs else "Nenhum arquivo na fila")
 
+    def _show_file_metrics(self, job_id: str):
+        state = self.states.get(job_id)
+        job = self.queue_model.job_for_key(job_id)
+        if not state or not job:
+            return
+        current = self.metric_dialogs.get(job_id)
+        if current:
+            current.raise_()
+            current.activateWindow()
+            return
+        dialog = FileMetricsDialog(job.display_path or job.path.name, self)
+        dialog.setModal(True)
+        dialog.update_metrics(state)
+        self.metric_dialogs = getattr(self, "metric_dialogs", {})
+        self.metric_dialogs[job_id] = dialog
+        dialog.finished.connect(lambda *_args, key=job_id: self.metric_dialogs.pop(key, None))
+        dialog.open()
     def _update_cuda_control(self):
         available, detail = cuda_status()
         self.device_combo.setItemData(0, detail, Qt.ItemDataRole.ToolTipRole)
@@ -571,27 +593,29 @@ class MainWindow(QMainWindow):
                                 "Informe apenas o nome de uma subpasta, por exemplo: transcricoes.")
             return
 
-        jobs, warnings = collect_transcription_jobs(
-            self.sources, output_path, output_next_to_source=True)
-        if warnings:
-            QMessageBox.warning(self, "Entradas ignoradas", "\n".join(warnings[:15]))
+        jobs = list(self.jobs)
+        for job in jobs:
+            job.output_dir = job.path.parent / output_name
         if not jobs:
             QMessageBox.information(self, "Fila vazia", "Nenhum arquivo de áudio ou vídeo compatível foi encontrado.")
             return
 
         self.jobs = jobs
         self.states = {
-            job.key: FileProgress(status="Queued", stage="Na fila", model_name=self.model_combo.currentText(),
+            job.key: FileProgress(status="Waiting", stage="Na fila", model_name=self.model_combo.currentText(),
                                   device=self.device_combo.currentData(), media_duration_sec=job.media_duration_sec)
             for job in jobs
         }
+        for index, job in enumerate(jobs):
+            self.states[job.key].status = "Queued"
+            self.states[job.key].stage = "Na fila"
         self.current_job_id = None
         self.run_started_at = time.time()
         self.cpu_samples.clear()
         self.ram_samples.clear()
         self.file_resource_samples.clear()
         self.status_write_errors.clear()
-        self._render_queue()
+        self.queue_model.replace_rows(jobs, self.states)
         self.queue_count.setText(f"{len(jobs)} arquivo(s) · processados em sequência")
         self.is_processing = True
         self._update_source_state()
@@ -607,17 +631,8 @@ class MainWindow(QMainWindow):
         self.batch_thread.start()
 
     def _render_queue(self):
-        self.queue_tree.clear()
         for job in self.jobs:
-            state = self.states[job.key]
-            percent = f"{state.percent}%" if state.percent is not None else "—"
-            item = QTreeWidgetItem([job.display_path or job.path.name, state.status, state.stage, percent])
-            item.setData(0, Qt.ItemDataRole.UserRole, job.key)
-            item.setToolTip(0, str(job.path))
-            if state.error:
-                item.setToolTip(1, state.error)
-            self.queue_tree.addTopLevelItem(item)
-        self.queue_tree.resizeColumnToContents(0)
+            self.queue_model.notify_state(job.key)
 
     def _handle_event(self, event: dict):
         kind = event.get("type")
@@ -635,12 +650,12 @@ class MainWindow(QMainWindow):
             self.current_job_id = job_id
             state.status = "Processando"
             state.stage = "Carregando modelo"
+            state.pid = event.get("pid")
             state.started_at = event.get("timestamp", time.time())
             state.stage_started_at = state.started_at
             state.model_name = event.get("model_name", state.model_name)
             state.device = event.get("device", state.device)
-            self.active_name.setText(self._display_name(job_id))
-            self.metric_labels["model"].setText(f"{state.model_name} · {state.device.upper()}")
+            self.status_line.setText(f"Processando: {self._display_name(job_id)}")
         elif state and kind == "stage_changed":
             state.stage = event.get("stage", state.stage)
             state.stage_started_at = event.get("timestamp", time.time())
@@ -680,21 +695,13 @@ class MainWindow(QMainWindow):
         self._render_queue()
 
     def _show_progress(self, state: FileProgress):
-        self.stage_label.setText(state.stage)
-        self.progress.setValue(state.percent or 0)
-        if state.stage == "Transcrevendo" and state.current_frames is not None and state.total_frames:
-            eta = self._format_duration(state.eta_sec) if state.eta_sec is not None else "calculando"
-            self.progress_detail.setText(f"Áudio analisado: {state.current_frames:,} / {state.total_frames:,} frames  ·  ETA {eta}")
-        elif state.percent is not None:
-            self.progress_detail.setText(f"{state.percent}% concluído")
-        else:
-            elapsed = self._format_duration(time.time() - state.stage_started_at) if state.stage_started_at else "0s"
-            self.progress_detail.setText(f"{state.stage} há {elapsed}; progresso de frames ainda indisponível.")
-        self.metric_labels["model"].setText(f"{state.model_name or '—'} · {state.device.upper() if state.device else '—'}")
-        self.metric_labels["load"].setText(self._format_duration(state.model_load_sec))
-        self.metric_labels["processing"].setText(self._format_duration(state.processing_duration_sec))
-        self.metric_labels["media"].setText(self._format_duration(state.media_duration_sec))
-        self.metric_labels["rtf"].setText(f"{state.realtime_factor:.2f}×" if state.realtime_factor is not None else "—")
+        if self.current_job_id:
+            eta = f" · ETA {self._format_duration(state.eta_sec)}" if state.eta_sec is not None else ""
+            progress = f" · {state.percent}%{eta}" if state.percent is not None else ""
+            self.status_line.setText(f"{self._display_name(self.current_job_id)} — {state.stage}{progress}")
+        for job_id, dialog in self.metric_dialogs.items():
+            if self.states.get(job_id) is state:
+                dialog.update_metrics(state)
 
     def _display_name(self, job_id: str):
         job = next((job for job in self.jobs if job.key == job_id), None)
@@ -717,20 +724,24 @@ class MainWindow(QMainWindow):
             state.status = "Falha"
             state.stage = f"Falha: {result.get('stage', state.stage)}"
             state.error = result.get("error", "Erro desconhecido")
+        self._show_progress(state)
+        if self.current_job_id == job_id:
+            self.current_job_id = None
         self._render_queue()
         self._update_summary()
 
     def _batch_finished(self):
+        self.current_job_id = None
         self._render_queue()
         self._update_summary()
         self.is_processing = False
-        self.source_list.setEnabled(True)
+        self.add_button.setEnabled(True)
         self.device_combo.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.language_edit.setEnabled(True)
         self.output_edit.setEnabled(True)
         self._update_source_state()
-        self.stage_label.setText("Fila finalizada")
+        self.status_line.setText("Fila finalizada")
 
     def _update_summary(self):
         done = sum(state.status == "Concluído" for state in self.states.values())
@@ -767,41 +778,51 @@ class MainWindow(QMainWindow):
             self.process = None
 
     def _update_system_stats(self):
-        cpu = ram = None
-        if self.process:
-            try:
-                cpu = self.process.cpu_percent(None)
-                ram = self.process.memory_info().rss / 1048576
-                if self.run_started_at:
-                    self.cpu_samples.append(cpu)
-                    self.ram_samples.append(ram)
-                    if self.current_job_id in self.file_resource_samples:
-                        samples = self.file_resource_samples[self.current_job_id]
-                        samples.append((cpu, ram))
-                        state = self.states[self.current_job_id]
-                        state.cpu_avg = sum(sample[0] for sample in samples) / len(samples)
-                        state.cpu_peak = max(sample[0] for sample in samples)
-                        state.ram_avg_mb = sum(sample[1] for sample in samples) / len(samples)
-                        state.ram_peak_mb = max(sample[1] for sample in samples)
-                        self._show_progress(state)
-            except Exception:
-                pass
-        if cpu is not None:
-            self.metric_labels["system"].setText(f"CPU {cpu:.0f}% · RAM {ram:.0f} MB")
+        if not self.process:
+            return
+        try:
+            cpu = self.process.cpu_percent(None)
+            ram = self.process.memory_info().rss / 1048576
+            if self.current_job_id and self.current_job_id in self.states:
+                state = self.states[self.current_job_id]
+                metrics = state.resource_metrics
+                metrics.cpu_percent.add(cpu)
+                metrics.ram_mb.add(ram)
+                state.cpu_avg = metrics.cpu_percent.average
+                state.cpu_peak = metrics.cpu_percent.maximum
+                state.ram_avg_mb = metrics.ram_mb.average
+                state.ram_peak_mb = metrics.ram_mb.maximum
+                self._render_queue()
+                for dialog in self.metric_dialogs.values():
+                    dialog.update_metrics(state)
+        except Exception:
+            pass
 
     def _on_gpu_info(self, data: dict):
-        self.gpu_data = data
-        self.gpu_panel.update_info(data)
+        device = data.get("device", {})
+        process = data.get("process", {})
+        self.gpu_data = device
+        self.gpu_panel.update_info(device)
         state = self.states.get(self.current_job_id) if self.current_job_id else None
-        if state and data.get("available"):
-            state.gpu_utilization_percent = data.get("utilization_percent")
-            state.gpu_memory_used_mb = data.get("memory_used_mb")
-            state.gpu_memory_total_mb = data.get("memory_total_mb")
-        if data.get("available"):
-            self.gpu_badge.setText(f"GPU  ·  {data['utilization_percent']}%")
+        if state:
+            metrics = state.resource_metrics
+            metrics.gpu_available = process.get("available", False)
+            metrics.gpu_utilization_available = process.get("utilization_available", False)
+            metrics.gpu_memory_available = process.get("memory_available", False)
+            metrics.gpu_unavailable_reason = process.get("reason", "")
+            metrics.gpu_utilization_percent.add(process.get("utilization_percent"))
+            metrics.gpu_memory_mb.add(process.get("memory_mb"))
+            # Legacy columns now contain PID-attributed data only; device totals remain in GPU panel.
+            state.gpu_utilization_percent = metrics.gpu_utilization_percent.current
+            state.gpu_memory_used_mb = int(metrics.gpu_memory_mb.current) if metrics.gpu_memory_mb.current is not None else None
+            state.gpu_memory_total_mb = None
+            self._render_queue()
+            for dialog in self.metric_dialogs.values():
+                dialog.update_metrics(state)
+        if device.get("available"):
+            self.gpu_badge.setText(f"GPU  ·  {device['utilization_percent']}%")
         elif not cuda_status()[0]:
             self.gpu_badge.setText("GPU indisponível  ·  detalhes")
-
     def _show_gpu_panel(self, event=None):
         self.hide_gpu_timer.stop()
         self.gpu_panel.adjustSize()
@@ -842,8 +863,9 @@ class MainWindow(QMainWindow):
             QLabel#activeName {{ font-size: 17px; font-weight: 600; }}
             QLabel#muted, QLabel#fieldLabel {{ color: {muted}; }}
             QLabel#metricValue {{ font-size: 15px; font-weight: 600; }}
-            QLineEdit, QComboBox, QListWidget, QTreeWidget {{ background: {card}; border: 1px solid {border}; border-radius: 7px; padding: 7px; }}
-            QTreeWidget::item {{ padding: 7px; }}
+            QLineEdit, QComboBox, QTableView {{ background: {card}; border: 1px solid {border}; border-radius: 7px; padding: 7px; }}
+            QTableView::item {{ padding: 7px; border-bottom: 1px solid {border}; }}
+            QHeaderView::section {{ background: {background}; border: 0; border-bottom: 1px solid {border}; padding: 8px; }}
             QPushButton {{ background: {card}; border: 1px solid {border}; border-radius: 8px; padding: 8px 12px; }}
             QPushButton:hover {{ border-color: {accent}; }}
             QPushButton#primaryButton {{ background: {accent}; color: white; border: 0; font-weight: 700; padding: 11px; }}

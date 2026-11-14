@@ -197,6 +197,16 @@ def write_live_status_tsv(
             "gpu_utilization_percent",
             "gpu_memory_used_mb",
             "gpu_memory_total_mb",
+            "cpu_min_percent",
+            "ram_min_mb",
+            "gpu_process_util_min_percent",
+            "gpu_process_util_avg_percent",
+            "gpu_process_util_max_percent",
+            "gpu_process_vram_min_mb",
+            "gpu_process_vram_avg_mb",
+            "gpu_process_vram_max_mb",
+            "gpu_process_samples",
+            "gpu_process_metric_status",
         ])
     ]
 
@@ -242,6 +252,18 @@ def write_live_status_tsv(
             f"{state.gpu_utilization_percent:.2f}" if state.gpu_utilization_percent is not None else "",
             str(state.gpu_memory_used_mb) if state.gpu_memory_used_mb is not None else "",
             str(state.gpu_memory_total_mb) if state.gpu_memory_total_mb is not None else "",
+            f"{state.resource_metrics.cpu_percent.minimum:.2f}" if state.resource_metrics.cpu_percent.minimum is not None else "",
+            f"{state.resource_metrics.ram_mb.minimum:.2f}" if state.resource_metrics.ram_mb.minimum is not None else "",
+            f"{state.resource_metrics.gpu_utilization_percent.minimum:.2f}" if state.resource_metrics.gpu_utilization_percent.minimum is not None else "",
+            f"{state.resource_metrics.gpu_utilization_percent.average:.2f}" if state.resource_metrics.gpu_utilization_percent.average is not None else "",
+            f"{state.resource_metrics.gpu_utilization_percent.maximum:.2f}" if state.resource_metrics.gpu_utilization_percent.maximum is not None else "",
+            f"{state.resource_metrics.gpu_memory_mb.minimum:.2f}" if state.resource_metrics.gpu_memory_mb.minimum is not None else "",
+            f"{state.resource_metrics.gpu_memory_mb.average:.2f}" if state.resource_metrics.gpu_memory_mb.average is not None else "",
+            f"{state.resource_metrics.gpu_memory_mb.maximum:.2f}" if state.resource_metrics.gpu_memory_mb.maximum is not None else "",
+            str(state.resource_metrics.gpu_utilization_percent.samples),
+            ("available" if state.resource_metrics.gpu_utilization_available and state.resource_metrics.gpu_memory_available else
+             "partial" if state.resource_metrics.gpu_available else
+             state.resource_metrics.gpu_unavailable_reason if state.resource_metrics.gpu_available is False else "pending"),
         ]))
 
     status_file.write_text("\n".join(lines), encoding="utf-8")
